@@ -23,6 +23,7 @@ import openpi.policies.libero_policy as libero_policy
 import openpi.policies.wuji_policy as wuji_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
+import openpi.shared.nnx_utils as _nnx_utils
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.polaris_config as polaris_config
 import openpi.training.misc.roboarena_config as roboarena_config
@@ -392,19 +393,24 @@ class LeRobotWujiDataConfig(DataConfigFactory):
     """
 
     extra_delta_transform: bool = False
+    wrist_cameras: tuple[str, ...] = ("left", "right")
     # Action key name in the raw dataset (used by LeRobot loader BEFORE repack transform)
     action_sequence_keys: Sequence[str] = ("action",)
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         # Map dataset keys to the keys expected by transforms
+        if self.wrist_cameras not in (("left",), ("right",), ("left", "right")):
+            raise ValueError(f"Invalid Wuji side selection: {self.wrist_cameras}")
+        if model_config.action_dim != 27 * len(self.wrist_cameras):
+            raise ValueError("Wuji action_dim must match the selected 7-arm + 20-hand sides")
         repack_transform = _transforms.Group(
             inputs=[
                 _transforms.RepackTransform(
                     {
                         "observation/image": "observation.images.stereo_right",
-                        "observation/left_wrist_image": "observation.images.cam_left_wrist",
-                        "observation/right_wrist_image": "observation.images.cam_right_wrist",
+                        **{f"observation/{side}_wrist_image": f"observation.images.cam_{side}_wrist"
+                           for side in self.wrist_cameras},
                         "observation/state": "observation.state",
                         "actions": "action",
                         "prompt": "prompt",
@@ -414,8 +420,8 @@ class LeRobotWujiDataConfig(DataConfigFactory):
         )
 
         data_transforms = _transforms.Group(
-            inputs=[wuji_policy.WujiInputs(model_type=model_config.model_type)],
-            outputs=[wuji_policy.WujiOutputs()],
+            inputs=[wuji_policy.WujiInputs(model_type=model_config.model_type, wrist_cameras=self.wrist_cameras)],
+            outputs=[wuji_policy.WujiOutputs(action_dim=model_config.action_dim)],
         )
 
         # Apply delta action transform if needed (for absolute action data)
@@ -423,7 +429,7 @@ class LeRobotWujiDataConfig(DataConfigFactory):
         if self.extra_delta_transform:
             # Full 54D: Left arm (7) + Left hand (20) + Right arm (7) + Right hand (20)
             # Apply delta to arms, keep hands absolute
-            delta_action_mask = _transforms.make_bool_mask(7, -20, 7, -20)
+            delta_action_mask = _transforms.make_bool_mask(*((7, -20) * len(self.wrist_cameras)))
 
             data_transforms = data_transforms.push(
                 inputs=[_transforms.DeltaActions(delta_action_mask)],
@@ -642,8 +648,43 @@ class TrainConfig:
             raise ValueError("Cannot resume and overwrite at the same time.")
 
 
+_WUJI_HEX_ROOT = pathlib.Path(__file__).resolve().parents[5] / "data/franka_wuji/training/hexagonal_peg_insertion"
+_WUJI_RIGHT_LORA_MODEL = pi0_config.Pi0Config(
+    pi05=True, action_dim=27, action_horizon=50, max_token_len=128,
+    paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora",
+)
+
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
+    TrainConfig(
+        name="pi05_wuji_right_hex_lora",
+        model=_WUJI_RIGHT_LORA_MODEL,
+        data=LeRobotWujiDataConfig(
+            repo_id=str(_WUJI_HEX_ROOT / "openpi_v21/train"),
+            assets=AssetsConfig(asset_id="wuji_right_hex_27d"),
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+            wrist_cameras=("right",),
+        ),
+        weight_loader=weight_loaders.PartialCheckpointWeightLoader(
+            str(_WUJI_HEX_ROOT.parent / "models/pi05_base/params")
+        ),
+        freeze_filter=nnx.Any(
+            _WUJI_RIGHT_LORA_MODEL.get_freeze_filter(),
+            _nnx_utils.PathRegex(".*PaliGemma/img/.*"),
+        ),
+        assets_base_dir=str(_WUJI_HEX_ROOT / "assets"),
+        checkpoint_base_dir=str(_WUJI_HEX_ROOT / "checkpoints"),
+        batch_size=4, num_workers=2, num_train_steps=30_000,
+        log_interval=10, save_interval=1000, keep_period=None,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1000, peak_lr=5e-5, decay_steps=30_000, decay_lr=5e-6,
+        ),
+        ema_decay=None,
+        wandb_enabled=False,
+        policy_metadata={"side": "right", "action_space": "franka_wuji_right_joint27",
+                         "fps": 30, "task": "hexagonal_peg_insertion"},
+    ),
     #
     # Inference Aloha configs.
     #

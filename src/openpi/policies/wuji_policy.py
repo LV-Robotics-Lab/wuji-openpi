@@ -49,23 +49,29 @@ class WujiInputs(transforms.DataTransformFn):
     """
 
     model_type: _model.ModelType
+    wrist_cameras: tuple[str, ...] = ("left", "right")
 
     def __call__(self, data: dict) -> dict:
         stereo_right_image = _parse_image(data["observation/image"])
-        left_wrist_image = _parse_image(data["observation/left_wrist_image"])
-        right_wrist_image = _parse_image(data["observation/right_wrist_image"])
+        if self.wrist_cameras not in (("left",), ("right",), ("left", "right")):
+            raise ValueError(f"Invalid wrist camera selection: {self.wrist_cameras}")
+        wrist_images = {
+            side: _parse_image(data[f"observation/{side}_wrist_image"])
+            if side in self.wrist_cameras else np.zeros_like(stereo_right_image)
+            for side in ("left", "right")
+        }
 
         inputs = {
             "state": data["observation/state"],
             "image": {
                 "base_0_rgb": stereo_right_image,
-                "left_wrist_0_rgb": left_wrist_image,
-                "right_wrist_0_rgb": right_wrist_image,
+                "left_wrist_0_rgb": wrist_images["left"],
+                "right_wrist_0_rgb": wrist_images["right"],
             },
             "image_mask": {
                 "base_0_rgb": np.True_,
-                "left_wrist_0_rgb": np.True_,
-                "right_wrist_0_rgb": np.True_,
+                "left_wrist_0_rgb": np.bool_("left" in self.wrist_cameras),
+                "right_wrist_0_rgb": np.bool_("right" in self.wrist_cameras),
             },
         }
 

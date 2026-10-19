@@ -23,6 +23,12 @@ Usage:
 
 from __future__ import annotations
 
+# Physical entry is owned by the host Prometheus workflow.
+if __name__ == "__main__":
+    import runpy as _host_entry
+    _host_entry.run_path('/home/gmlab/workspace/PrometheusV4/scripts/lib/require_host_entry.py')["guard_main"]('openpi-ros-legacy')
+
+
 import argparse
 import logging
 import sys

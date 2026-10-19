@@ -1,0 +1,8 @@
+# LeRobot commit 0cf8648 expects dataset["column"] to return a list, not a v4 Column.
+datasets==3.6.0
+# TorchCodec 0.5 is compatible with the repository's torch 2.7.1.
+torchcodec==0.5.0
+# Imported unconditionally by the upstream PyTorch model module, also on JAX imports.
+pytest==9.1.1
+# Verify official GCS composite checkpoint objects that do not expose MD5.
+google-crc32c==1.8.0
